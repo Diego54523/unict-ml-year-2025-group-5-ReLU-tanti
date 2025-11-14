@@ -1,4 +1,4 @@
-# 🤖 unict-ml-year-2025-group: ReLU-tanti
+# 🤖 unict-ml-year-2025-group-5: ReLU-tanti
 Benvenuti nel repository template per i progetti di Machine Learning del laboratorio.
 Questo repository fornisce una struttura base per organizzare codice, dati e documentazione.
 
