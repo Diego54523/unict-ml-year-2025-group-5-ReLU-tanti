@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from Get_Mean_std import get_mean_std
 from Custom_CNN_for_Feature_Extraction import CustomCNNFeatureExtractor
 from Func_train_CNN import train_classifier
+from torchvision.datasets import ImageFolder
 import gc #Importo questa libreria per la gestione della memoria, dato che anche con una BATCH di 32 arivati al layer3 la memoria GPU si esaurisce, con questa classe per sicurezza pulisco innanzitutto la memoria prima di addestrare il modello
 import time
 
@@ -86,7 +87,7 @@ if __name__ == '__main__':
     gc.collect()
         
     BATCH_SIZE = 16
-    NUM_WORKERS = 0 #Per alleggerire il carico sulla memoria RAM, imposto a 0 il numero di workers (su Windows spesso dà problemi con valori >0)
+    NUM_WORKERS = 4 #Per alleggerire il carico sulla memoria RAM, imposto a 0 il numero di workers (su Windows spesso dà problemi con valori >0)
     IMG_SIZE = (178, 208) 
     DIVIDER = 0.8
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -100,7 +101,7 @@ if __name__ == '__main__':
         transforms.ToTensor() # Convertiamo subito in tensore per la RAM
     ])
 
-    full_dataset = InMemoryDataset(root_dir=dataSetPath, transform=raw_transform)
+    full_dataset = ImageFolder(root=dataSetPath, transform=raw_transform)
 
     # Split Training e Validation
     trainSize = int(DIVIDER * len(full_dataset))
