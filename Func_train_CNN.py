@@ -7,15 +7,15 @@ from sklearn.metrics import accuracy_score
 from Average_for_Batch_Value import AverageValueMeter
 import os
 
-def train_classifier(model, train_loader, test_loader, class_weights, exp_name="experiment_mlp_classifier", lr=0.0001, epochs = 10, momentum = 0.9, logdir="logs_mlp_classifier"):
+def train_classifier(model, train_loader, test_loader, class_weights, exp_name="experiment_mlp_classifier", lr=0.0001, epochs = 10, momentum = 0.9, logdir="logs_mlp_classifier", patience = 4):
     if class_weights is not None:
         criterion = nn.CrossEntropyLoss(weight=class_weights)
     else:
         criterion = nn.CrossEntropyLoss()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4) #Usiamo weight_decay per la regolarizzazione della CNN
+    optimizer = SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=1e-3) #Usiamo weight_decay per la regolarizzazione della CNN
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=3, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=patience, verbose=True)
    
     loss_meter = AverageValueMeter()
     acc_meter = AverageValueMeter()
@@ -36,6 +36,9 @@ def train_classifier(model, train_loader, test_loader, class_weights, exp_name="
     
     global_step = 0
     best_acc = 0.0
+
+    patience_counter = 0
+    best_model_path = os.path.join(weights_dir, f"{exp_name}_BEST.pth")
 
     for e in range(epochs):
         print(f"Epoch {e+1} of {epochs}")
@@ -83,15 +86,25 @@ def train_classifier(model, train_loader, test_loader, class_weights, exp_name="
             # conserviamo i pesi del modello alla fine
             if mode == "test":
                 val_accuracy = acc_meter.value()
+                val_loss = loss_meter.value()
+
                 scheduler.step(val_accuracy)
 
                 if val_accuracy > best_acc:
+                    print(f"    [MIGLIORAMENTO] Accuracy salita da {best_acc:.4f} a {val_accuracy:.4f}. Salvataggio modello...")
                     best_acc = val_accuracy
-                    best_model_path = os.path.join(weights_dir, f"{exp_name}_BEST.pth")
+                    patience_counter = 0
                     torch.save(model.state_dict(), best_model_path)
+                else:
+                    patience_counter += 1
+                    print(f"    [NESSUN MIGLIORAMENTO] Patience: {patience_counter}/{patience}")
+
+            if patience_counter >= patience:
+                print(f"\n--- EARLY STOPPING ATTIVATO ---")
+                print(f"Il modello non migliora da {patience} epoche. Stop.")
+                break
 
         
-        output_path = os.path.join(weights_dir, f"{exp_name}_Last.pth")
-
-        torch.save(model.state_dict(), output_path)
+        print(f"\nRicaricamento dei pesi migliori (Acc: {best_acc:.4f})...")
+        model.load_state_dict(torch.load(best_model_path))
     return model

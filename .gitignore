@@ -12,3 +12,6 @@ __pycache__/Feature_extraction_ResNet18.cpython-311.pyc
 .gitignore
 __pycache__/Average_for_Batch_Value.cpython-311.pyc
 mri_features.npz
+__pycache__/Custom_CNN_for_Feature_Extraction.cpython-311.pyc
+__pycache__/Func_train_CNN.cpython-311.pyc
+test.py

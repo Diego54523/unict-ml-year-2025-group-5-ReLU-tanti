@@ -12,13 +12,12 @@ class CustomCNNFeatureExtractor(nn.Module):
         self.layer1 = self.layer_block(BasicBlock, 32, num_blocks=2, stride=1)  #Dimensione 32x176x206
         self.layer2 = self.layer_block(BasicBlock, 64, num_blocks=2, stride=2) #Dimensione 64x88x103
         self.layer3 = self.layer_block(BasicBlock, 128, num_blocks=2, stride=2) #Dimensione 128x44x52
-        self.layer4 = self.layer_block(BasicBlock, 256, num_blocks=3, stride=2) #Dimensione 256x22x26 e poi 256x11x13
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1)) #Output sarà di dimensione 256x1x1
 
-        self.dropout = nn.Dropout(p=0.5)
+        self.dropout = nn.Dropout(p=0.25)
 
-        self.linear = nn.Linear(256, num_classes) #Classificazione in 4 classi
+        self.linear = nn.Linear(128, num_classes) #Classificazione in 4 classi
     
     def layer_block(self, block, out_channels, num_blocks, stride):
         if(num_blocks > 2):
@@ -37,9 +36,11 @@ class CustomCNNFeatureExtractor(nn.Module):
         out = self.relu(out)
 
         out = self.layer1(out)
+        out = self.dropout(out)
         out = self.layer2(out)
+        out = self.dropout(out)
         out = self.layer3(out)
-        out = self.layer4(out)
+        out = self.dropout(out)
 
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)  # Flatten

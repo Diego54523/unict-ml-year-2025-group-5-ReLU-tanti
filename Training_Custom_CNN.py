@@ -10,6 +10,7 @@ from Func_train_CNN import train_classifier
 from torchvision.datasets import ImageFolder
 import gc #Importo questa libreria per la gestione della memoria, dato che anche con una BATCH di 32 arivati al layer3 la memoria GPU si esaurisce, con questa classe per sicurezza pulisco innanzitutto la memoria prima di addestrare il modello
 import time
+from sklearn.metrics import classification_report
 
 #Creo una classe per caricare tutto in memoria in modo da ridurre di molto i tempi eliminando l'accesso a memoria ogni volta che chiedo un batch
 class InMemoryDataset(Dataset):
@@ -129,8 +130,9 @@ if __name__ == '__main__':
     train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(p=0.5),      # Data Augmentation (su PIL)
         transforms.RandomRotation(15),  # Data Augmentation (su PIL)
-        transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)), # Data Augmentation (su PIL)
+        transforms.RandomAffine(degrees=0, translate=(0.15, 0.15), scale=(0.9, 1.1)), # Data Augmentation (su PIL)
         transforms.ColorJitter(brightness=0.2, contrast=0.2), # Data Augmentation (su PIL)
+        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)), # Data Augmentation (su PIL)
         transforms.ToTensor(),
         transforms.Normalize(mean=mean.tolist(), std=std.tolist()) # Normalizzazione
     ])
@@ -167,5 +169,32 @@ if __name__ == '__main__':
         test_loader=valLoader, 
         class_weights=class_weights, 
         exp_name="custom_cnn_classifier", 
-        logdir="logs_custom_cnn_classifier"
+        logdir="logs_custom_cnn_classifier",
+        patience=15
     )
+
+    model.eval() # Modalità valutazione
+    correct = 0
+    total = 0
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for images, labels in valLoader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
+
+            outputs = model(images)
+
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
+    final_acc = 100 * correct / total
+    print(f'\nAccuracy Finale del Miglior Modello sul Validation Set: {final_acc:.2f}%')
+
+    # Opzionale: Matrice di Confusione
+    print("\nClassification Report:")
+    print(classification_report(all_labels, all_preds, target_names=["Non", "Very Mild", "Mild", "Moderate"]))
