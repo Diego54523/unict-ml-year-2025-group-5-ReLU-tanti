@@ -1,45 +1,116 @@
 import os
+import random
+from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split, WeightedRandomSampler
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import datasets, transforms
 
 
 # ==========================
-# CONFIGURAZIONE
+# CONFIG
 # ==========================
-DATA_DIR = "archive/MRI"
-BATCH_SIZE = 32          # ok così, se la GPU regge puoi provare 64
-NUM_EPOCHS = 30          # dai tempo al modello, ci penserà l'early stopping
-LR = 3e-5                # più basso: meno salti pazzi, convergenza più stabile
-WEIGHT_DECAY = 1e-4      # meno forte di 1e-3
+SEED = 42
+
+BATCH_SIZE = 64          # 4050: prova 64, se OOM -> 32
+NUM_EPOCHS = 40
+EARLY_STOP_PATIENCE = 7
+
+LR_HEAD = 1e-4           # LR per la testa
+LR_LAYER4 = 1e-5         # LR per layer4 (fine-tuning leggero)
+WEIGHT_DECAY = 1e-4
+
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.15
-NUM_WORKERS = 8
-SEED = 42
-EARLY_STOP_PATIENCE = 6  # non killare l’addestramento troppo presto
 
-torch.manual_seed(SEED)
-np.random.seed(SEED)
+NUM_WORKERS = 8          # Fedora+i7: ok 8; se instabile -> 4
+USE_AMP = True
+FREEZE_ALL_BUT_LAYER4 = True
+
+BEST_MODEL_PATH = "best_radimagenet_resnet50.pth"
 
 
 # ==========================
-# TRANSFORMS
+# PATH DATASET (robusto)
 # ==========================
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "archive" / "MRI"   # <-- se diverso, cambia qui
+DATA_DIR = str(DATA_DIR)
+
+
+# ==========================
+# SEED
+# ==========================
+def seed_everything(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = True  # speed
+    torch.backends.cudnn.deterministic = False
+
+seed_everything(SEED)
+
+
+# ==========================
+# AMP (API nuova con fallback)
+# ==========================
+def make_amp():
+    """
+    Ritorna (GradScaler, autocast, amp_kwargs_builder)
+    usando torch.amp quando disponibile, altrimenti torch.cuda.amp.
+    """
+    try:
+        from torch.amp import GradScaler, autocast
+
+        def autocast_ctx(enabled: bool):
+            # torch.amp.autocast richiede device_type
+            return autocast(device_type="cuda", dtype=torch.float16, enabled=enabled)
+
+        def scaler_ctor(enabled: bool):
+            return GradScaler("cuda", enabled=enabled)
+
+        return scaler_ctor, autocast_ctx
+
+    except Exception:
+        # fallback vecchio (se torch.amp non c'è)
+        from torch.cuda.amp import GradScaler, autocast
+
+        def autocast_ctx(enabled: bool):
+            return autocast(enabled=enabled)
+
+        def scaler_ctor(enabled: bool):
+            return GradScaler(enabled=enabled)
+
+        return scaler_ctor, autocast_ctx
+
+
+SCALER_CTOR, AUTOCAST_CTX = make_amp()
+
+
+# ==========================
+# TRANSFORMS (MRI-friendly)
+# ==========================
+# Nota: evito ColorJitter e flip aggressivi; affine leggero è più sensato su MRI.
 train_transform = transforms.Compose([
-    transforms.Grayscale(num_output_channels=3),   # da 1 canale a 3
+    transforms.Grayscale(num_output_channels=3),
     transforms.Resize((256, 256)),
-    transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),  # MODIFICA: un filo più forte
-    transforms.RandomHorizontalFlip(p=0.5),
-    transforms.RandomRotation(degrees=15),
-    transforms.ColorJitter(brightness=0.1, contrast=0.1),  # MODIFICA: piccola variazione intensità
+    transforms.RandomCrop(224),
+    transforms.RandomApply([
+        transforms.RandomAffine(
+            degrees=10,
+            translate=(0.03, 0.03),
+            scale=(0.95, 1.05),
+            shear=5
+        )
+    ], p=0.8),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5],
-                         std=[0.5, 0.5, 0.5]),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225]),
 ])
 
 val_test_transform = transforms.Compose([
@@ -47,73 +118,63 @@ val_test_transform = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.CenterCrop(224),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5],
-                         std=[0.5, 0.5, 0.5]),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225]),
 ])
 
 
 # ==========================
-# DATASET & DATALOADER
+# DATASET: subset con transform indipendente
 # ==========================
-def get_dataloaders(data_dir):
-    full_dataset = datasets.ImageFolder(root=data_dir,
-                                        transform=train_transform)
+class SubsetWithTransform(Dataset):
+    def __init__(self, base_dataset, indices, transform=None):
+        self.base_dataset = base_dataset
+        self.indices = list(indices)
+        self.transform = transform
 
-    num_classes = len(full_dataset.classes)
-    print("Classi trovate:", full_dataset.classes)
+    def __len__(self):
+        return len(self.indices)
 
-    N = len(full_dataset)
-    n_test = int(TEST_SPLIT * N)
-    n_val = int(VAL_SPLIT * N)
-    n_train = N - n_val - n_test
-
-    train_dataset, val_dataset, test_dataset = random_split(
-        full_dataset, [n_train, n_val, n_test],
-        generator=torch.Generator().manual_seed(SEED)
-    )
-
-    val_dataset.dataset.transform = val_test_transform
-    test_dataset.dataset.transform = val_test_transform
-
-    # ---- WeightedRandomSampler sul TRAIN ----
-    train_targets = [full_dataset.targets[i] for i in train_dataset.indices]
-    class_counts = np.bincount(train_targets)
-    print("Campioni train per classe:", class_counts)
-
-    class_weights = 1.0 / class_counts
-    sample_weights = class_weights[train_targets]
-    sampler = WeightedRandomSampler(
-        weights=torch.DoubleTensor(sample_weights),
-        num_samples=len(sample_weights),
-        replacement=True
-    )
-
-    train_loader = DataLoader(train_dataset,
-                              batch_size=BATCH_SIZE,
-                              sampler=sampler,
-                              num_workers=NUM_WORKERS)
-
-    val_loader = DataLoader(val_dataset,
-                            batch_size=BATCH_SIZE,
-                            shuffle=False,
-                            num_workers=NUM_WORKERS)
-
-    test_loader = DataLoader(test_dataset,
-                             batch_size=BATCH_SIZE,
-                             shuffle=False,
-                             num_workers=NUM_WORKERS)
-
-    return train_loader, val_loader, test_loader, num_classes, full_dataset.classes
+    def __getitem__(self, idx):
+        x, y = self.base_dataset[self.indices[idx]]  # x è PIL.Image (base_dataset transform=None)
+        if self.transform is not None:
+            x = self.transform(x)  # -> Tensor
+        return x, y
 
 
 # ==========================
-# MODELLO: RADIMAGENET RESNET50
+# SPLIT STRATIFICATO (senza sklearn)
 # ==========================
-def get_model(num_classes):
-    """
-    Scarica ResNet50 pre-addestrata su RadImageNet (backbone senza testa)
-    e aggiunge una testa di classificazione per il tuo numero di classi.
-    """
+def stratified_split_indices(targets, val_split=0.15, test_split=0.15, seed=42):
+    targets = np.asarray(targets)
+    classes = np.unique(targets)
+
+    rng = np.random.default_rng(seed)
+    train_idx, val_idx, test_idx = [], [], []
+
+    for c in classes:
+        idx_c = np.where(targets == c)[0]
+        rng.shuffle(idx_c)
+
+        n_c = len(idx_c)
+        n_test = int(round(test_split * n_c))
+        n_val = int(round(val_split * n_c))
+        n_train = n_c - n_val - n_test
+
+        train_idx.extend(idx_c[:n_train].tolist())
+        val_idx.extend(idx_c[n_train:n_train + n_val].tolist())
+        test_idx.extend(idx_c[n_train + n_val:].tolist())
+
+    rng.shuffle(train_idx)
+    rng.shuffle(val_idx)
+    rng.shuffle(test_idx)
+    return train_idx, val_idx, test_idx
+
+
+# ==========================
+# MODEL
+# ==========================
+def get_model(num_classes: int):
     backbone = torch.hub.load(
         "Warvito/radimagenet-models",
         model="radimagenet_resnet50",
@@ -121,66 +182,44 @@ def get_model(num_classes):
         trust_repo=True,
     )
 
-    class RadImageNetResNet50(nn.Module):
+    # Se è una ResNet-style, togliamo la testa per avere feature 2048
+    if hasattr(backbone, "fc"):
+        backbone.fc = nn.Identity()
+
+    class RadResNet50Classifier(nn.Module):
         def __init__(self, backbone, num_classes):
             super().__init__()
             self.backbone = backbone
-            self.pool = nn.AdaptiveAvgPool2d(1)
-            self.dropout = nn.Dropout(p=0.5)
+            self.pool = nn.AdaptiveAvgPool2d(1)  # fallback se backbone restituisce feature-map
+            self.dropout = nn.Dropout(0.5)
             self.fc = nn.Linear(2048, num_classes)
 
         def forward(self, x):
-            x = self.backbone(x)          # [B, 2048, H, W]
-            x = self.pool(x)              # [B, 2048, 1, 1]
-            x = torch.flatten(x, 1)       # [B, 2048]
+            x = self.backbone(x)
+            # supporta sia [B, 2048] che [B, 2048, H, W]
+            if x.dim() == 4:
+                x = self.pool(x)
+                x = torch.flatten(x, 1)
             x = self.dropout(x)
             x = self.fc(x)
             return x
 
-    model = RadImageNetResNet50(backbone, num_classes)
+    model = RadResNet50Classifier(backbone, num_classes)
 
-    # MODIFICA: FREEZING PARZIALE BACKBONE
-    # congela tutto il backbone...
-    for param in model.backbone.parameters():
-        param.requires_grad = False
-    # ...ma sblocca l'ultimo blocco (layer4) per un fine-tuning leggero
-    if hasattr(model.backbone, "layer4"):
-        for param in model.backbone.layer4.parameters():
-            param.requires_grad = True
+    if FREEZE_ALL_BUT_LAYER4:
+        for p in model.backbone.parameters():
+            p.requires_grad = False
+        # sblocca layer4 se esiste
+        if hasattr(model.backbone, "layer4"):
+            for p in model.backbone.layer4.parameters():
+                p.requires_grad = True
 
     return model
 
 
 # ==========================
-# LOOP DI TRAINING / VAL
+# METRICHE
 # ==========================
-def train_one_epoch(model, loader, criterion, optimizer, device):
-    model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-
-    for inputs, labels in tqdm(loader, desc="Train", leave=False):
-        inputs = inputs.to(device)
-        labels = labels.to(device)
-
-        optimizer.zero_grad()
-
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item() * inputs.size(0)
-        _, preds = outputs.max(1)
-        correct += preds.eq(labels).sum().item()
-        total += labels.size(0)
-
-    epoch_loss = running_loss / total
-    epoch_acc = correct / total
-    return epoch_loss, epoch_acc
-
-
 @torch.no_grad()
 def evaluate(model, loader, criterion, device, n_classes):
     model.eval()
@@ -192,116 +231,221 @@ def evaluate(model, loader, criterion, device, n_classes):
     per_class_total = np.zeros(n_classes, dtype=np.int64)
 
     for inputs, labels in tqdm(loader, desc="Eval", leave=False):
-        inputs = inputs.to(device)
-        labels = labels.to(device)
+        inputs = inputs.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
         outputs = model(inputs)
         loss = criterion(outputs, labels)
 
         running_loss += loss.item() * inputs.size(0)
-        _, preds = outputs.max(1)
+        preds = outputs.argmax(1)
 
-        correct += preds.eq(labels).sum().item()
+        correct += (preds == labels).sum().item()
         total += labels.size(0)
 
         for c in range(n_classes):
-            mask = labels == c
+            mask = (labels == c)
             per_class_correct[c] += (preds[mask] == labels[mask]).sum().item()
             per_class_total[c] += mask.sum().item()
 
-    epoch_loss = running_loss / total
-    epoch_acc = correct / total
+    epoch_loss = running_loss / max(total, 1)
+    epoch_acc = correct / max(total, 1)
 
     recalls = []
     for c in range(n_classes):
         if per_class_total[c] > 0:
             recalls.append(per_class_correct[c] / per_class_total[c])
-    balanced_acc = float(np.mean(recalls))
+    balanced_acc = float(np.mean(recalls)) if len(recalls) else 0.0
 
     return epoch_loss, epoch_acc, balanced_acc, per_class_correct, per_class_total
+
+
+# ==========================
+# TRAIN (AMP)
+# ==========================
+def train_one_epoch(model, loader, criterion, optimizer, device, scaler, use_amp: bool):
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+
+    for inputs, labels in tqdm(loader, desc="Train", leave=False):
+        inputs = inputs.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        if use_amp:
+            with AUTOCAST_CTX(enabled=True):
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+        running_loss += loss.item() * inputs.size(0)
+        preds = outputs.argmax(1)
+        correct += (preds == labels).sum().item()
+        total += labels.size(0)
+
+    epoch_loss = running_loss / max(total, 1)
+    epoch_acc = correct / max(total, 1)
+    return epoch_loss, epoch_acc
 
 
 # ==========================
 # MAIN
 # ==========================
 def main():
+    assert os.path.isdir(DATA_DIR), f"DATA_DIR non trovato: {DATA_DIR}"
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
 
-    train_loader, val_loader, test_loader, num_classes, class_names = \
-        get_dataloaders(DATA_DIR)
+    # Dataset base SENZA transform (PIL -> transform la applico nei subset)
+    base_dataset = datasets.ImageFolder(root=DATA_DIR, transform=None)
+    class_names = base_dataset.classes
+    num_classes = len(class_names)
+    targets = base_dataset.targets
 
-    model = get_model(num_classes)
-    model = model.to(device)
+    print("Classi trovate:", class_names, "| num_classes:", num_classes)
 
-    # MODIFICA: label smoothing per evitare predizioni troppo "rigide"
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-
-    # MODIFICA: ottimizziamo solo i parametri con requires_grad=True
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = optim.Adam(trainable_params, lr=LR, weight_decay=WEIGHT_DECAY)
-
-    # MODIFICA: scheduler sul learning rate basato sulla balanced accuracy di validazione
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="max",
-        factor=0.5,
-        patience=2,
+    # Split stratificato
+    train_idx, val_idx, test_idx = stratified_split_indices(
+        targets, val_split=VAL_SPLIT, test_split=TEST_SPLIT, seed=SEED
     )
 
+    train_dataset = SubsetWithTransform(base_dataset, train_idx, transform=train_transform)
+    val_dataset   = SubsetWithTransform(base_dataset, val_idx, transform=val_test_transform)
+    test_dataset  = SubsetWithTransform(base_dataset, test_idx, transform=val_test_transform)
+
+    # Conteggi classi sul train
+    train_targets = np.array([targets[i] for i in train_idx], dtype=np.int64)
+    class_counts = np.bincount(train_targets, minlength=num_classes).astype(np.float32)
+    print("Campioni TRAIN per classe:", class_counts)
+
+    # Class weights per loss (inverso frequenza, "soft")
+    class_weights = class_counts.sum() / (num_classes * np.clip(class_counts, 1.0, None))
+    print("Class weights (train):", class_weights)
+
+    model = get_model(num_classes).to(device)
+
+    # Loss pesata
+    criterion = nn.CrossEntropyLoss(
+        weight=torch.tensor(class_weights, dtype=torch.float32, device=device)
+    )
+
+    # Sampler per bilanciare i batch (stabilizza molto la loss)
+    sample_weights = class_weights[train_targets]
+    sampler = WeightedRandomSampler(
+        weights=torch.tensor(sample_weights, dtype=torch.double),
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+
+    # DataLoader ottimizzati
+    common_loader_kwargs = dict(
+        num_workers=NUM_WORKERS,
+        pin_memory=(device.type == "cuda"),
+        persistent_workers=(NUM_WORKERS > 0),
+        prefetch_factor=2 if NUM_WORKERS > 0 else None
+    )
+
+    # prefetch_factor va passato solo se num_workers>0
+    def dl_kwargs():
+        return {k: v for k, v in common_loader_kwargs.items() if v is not None}
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        sampler=sampler,
+        shuffle=False,   # con sampler non usare shuffle
+        **dl_kwargs()
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        **dl_kwargs()
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        **dl_kwargs()
+    )
+
+    # Optimizer: LR differenziati (head vs layer4)
+    param_groups = [{"params": model.fc.parameters(), "lr": LR_HEAD}]
+
+    if hasattr(model.backbone, "layer4"):
+        layer4_params = [p for p in model.backbone.layer4.parameters() if p.requires_grad]
+        if layer4_params:
+            param_groups.append({"params": layer4_params, "lr": LR_LAYER4})
+
+    optimizer = optim.AdamW(param_groups, weight_decay=WEIGHT_DECAY)
+
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=2
+    )
+
+    use_amp = USE_AMP and (device.type == "cuda")
+    scaler = SCALER_CTOR(enabled=use_amp)
+
     best_val_balacc = 0.0
-    best_model_path = "best_radimagenet_resnet50.pth"
     epochs_no_improve = 0
 
     for epoch in range(1, NUM_EPOCHS + 1):
         print(f"\n===== EPOCH {epoch}/{NUM_EPOCHS} =====")
+        print("LRs:", [pg["lr"] for pg in optimizer.param_groups])
 
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device
+            model, train_loader, criterion, optimizer, device, scaler, use_amp
         )
-        print(f"Train   - loss: {train_loss:.4f} | acc: {train_acc:.4f}")
+        print(f"Train - loss: {train_loss:.4f} | acc: {train_acc:.4f}")
 
         val_loss, val_acc, val_balacc, _, _ = evaluate(
             model, val_loader, criterion, device, num_classes
         )
-        print(f"Val     - loss: {val_loss:.4f} | acc: {val_acc:.4f} | bal_acc: {val_balacc:.4f}")
+        print(f"Val   - loss: {val_loss:.4f} | acc: {val_acc:.4f} | bal_acc: {val_balacc:.4f}")
 
-        # step del scheduler con la metrica di interesse
         scheduler.step(val_balacc)
 
-        # salva il modello migliore in base alla balanced accuracy
         if val_balacc > best_val_balacc:
             best_val_balacc = val_balacc
-            torch.save(model.state_dict(), best_model_path)
-            print(f"--> Nuovo best model salvato ({best_model_path})")
+            torch.save(model.state_dict(), BEST_MODEL_PATH)
+            print(f"--> Nuovo best salvato: {BEST_MODEL_PATH}")
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
             print(f"Nessun miglioramento per {epochs_no_improve} epoche.")
 
-        # MODIFICA: early stopping
         if epochs_no_improve >= EARLY_STOP_PATIENCE:
-            print("Early stopping: la balanced accuracy non migliora più.")
+            print("Early stopping: balanced accuracy non migliora.")
             break
 
-    # =============== TEST FINALE ===============
-    print("\nCarico il modello migliore per il test...")
-    model.load_state_dict(torch.load(best_model_path, map_location=device))
+    # TEST
+    print("\nCarico il best model per il test...")
+    model.load_state_dict(torch.load(BEST_MODEL_PATH, map_location=device))
 
-    test_loss, test_acc, test_balacc, per_class_correct, per_class_total = evaluate(
+    test_loss, test_acc, test_balacc, per_c_corr, per_c_tot = evaluate(
         model, test_loader, criterion, device, num_classes
     )
 
-    print("\n===== RISULTATI TEST =====")
+    print("\n===== TEST =====")
     print(f"Loss: {test_loss:.4f}")
     print(f"Accuracy: {test_acc:.4f}")
     print(f"Balanced Accuracy: {test_balacc:.4f}")
 
     print("\nAccuracy per classe:")
-    for idx, cls in enumerate(class_names):
-        if per_class_total[idx] > 0:
-            acc_cls = per_class_correct[idx] / per_class_total[idx]
-            print(f"{cls}: {acc_cls:.4f}  ({per_class_correct[idx]}/{per_class_total[idx]})")
+    for i, name in enumerate(class_names):
+        if per_c_tot[i] > 0:
+            print(f"{name}: {per_c_corr[i]/per_c_tot[i]:.4f} ({per_c_corr[i]}/{per_c_tot[i]})")
 
 
 if __name__ == "__main__":
