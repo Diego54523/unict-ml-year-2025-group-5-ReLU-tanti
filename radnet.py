@@ -16,20 +16,27 @@ from torchvision import datasets, transforms
 # ==========================
 SEED = 42
 
-BATCH_SIZE = 64          # 4050: prova 64, se OOM -> 32
+BATCH_SIZE = 64
 NUM_EPOCHS = 40
 EARLY_STOP_PATIENCE = 7
 
-LR_HEAD = 1e-4           # LR per la testa
-LR_LAYER4 = 1e-5         # LR per layer4 (fine-tuning leggero)
+LR_HEAD = 5e-5
+LR_LAYER4 = 1e-5
+LR_LAYER3 = 5e-6
+
 WEIGHT_DECAY = 1e-4
 
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.15
 
-NUM_WORKERS = 8          # Fedora+i7: ok 8; se instabile -> 4
+NUM_WORKERS = 8
 USE_AMP = True
+
 FREEZE_ALL_BUT_LAYER4 = True
+UNFREEZE_LAYER3 = True
+
+LABEL_SMOOTHING = 0.05
+GRAD_CLIP_NORM = 1.0
 
 BEST_MODEL_PATH = "best_radimagenet_resnet50.pth"
 
@@ -38,7 +45,7 @@ BEST_MODEL_PATH = "best_radimagenet_resnet50.pth"
 # PATH DATASET (robusto)
 # ==========================
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "archive" / "MRI"   # <-- se diverso, cambia qui
+DATA_DIR = BASE_DIR / "archive" / "MRI"
 DATA_DIR = str(DATA_DIR)
 
 
@@ -50,7 +57,7 @@ def seed_everything(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True  # speed
+    torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
 
 seed_everything(SEED)
@@ -60,15 +67,10 @@ seed_everything(SEED)
 # AMP (API nuova con fallback)
 # ==========================
 def make_amp():
-    """
-    Ritorna (GradScaler, autocast, amp_kwargs_builder)
-    usando torch.amp quando disponibile, altrimenti torch.cuda.amp.
-    """
     try:
         from torch.amp import GradScaler, autocast
 
         def autocast_ctx(enabled: bool):
-            # torch.amp.autocast richiede device_type
             return autocast(device_type="cuda", dtype=torch.float16, enabled=enabled)
 
         def scaler_ctor(enabled: bool):
@@ -77,7 +79,6 @@ def make_amp():
         return scaler_ctor, autocast_ctx
 
     except Exception:
-        # fallback vecchio (se torch.amp non c'è)
         from torch.cuda.amp import GradScaler, autocast
 
         def autocast_ctx(enabled: bool):
@@ -95,7 +96,6 @@ SCALER_CTOR, AUTOCAST_CTX = make_amp()
 # ==========================
 # TRANSFORMS (MRI-friendly)
 # ==========================
-# Nota: evito ColorJitter e flip aggressivi; affine leggero è più sensato su MRI.
 train_transform = transforms.Compose([
     transforms.Grayscale(num_output_channels=3),
     transforms.Resize((256, 256)),
@@ -136,9 +136,9 @@ class SubsetWithTransform(Dataset):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        x, y = self.base_dataset[self.indices[idx]]  # x è PIL.Image (base_dataset transform=None)
+        x, y = self.base_dataset[self.indices[idx]]  # PIL.Image
         if self.transform is not None:
-            x = self.transform(x)  # -> Tensor
+            x = self.transform(x)  # Tensor
         return x, y
 
 
@@ -182,7 +182,6 @@ def get_model(num_classes: int):
         trust_repo=True,
     )
 
-    # Se è una ResNet-style, togliamo la testa per avere feature 2048
     if hasattr(backbone, "fc"):
         backbone.fc = nn.Identity()
 
@@ -190,13 +189,12 @@ def get_model(num_classes: int):
         def __init__(self, backbone, num_classes):
             super().__init__()
             self.backbone = backbone
-            self.pool = nn.AdaptiveAvgPool2d(1)  # fallback se backbone restituisce feature-map
+            self.pool = nn.AdaptiveAvgPool2d(1)
             self.dropout = nn.Dropout(0.5)
             self.fc = nn.Linear(2048, num_classes)
 
         def forward(self, x):
             x = self.backbone(x)
-            # supporta sia [B, 2048] che [B, 2048, H, W]
             if x.dim() == 4:
                 x = self.pool(x)
                 x = torch.flatten(x, 1)
@@ -209,16 +207,20 @@ def get_model(num_classes: int):
     if FREEZE_ALL_BUT_LAYER4:
         for p in model.backbone.parameters():
             p.requires_grad = False
-        # sblocca layer4 se esiste
+
         if hasattr(model.backbone, "layer4"):
             for p in model.backbone.layer4.parameters():
+                p.requires_grad = True
+
+        if UNFREEZE_LAYER3 and hasattr(model.backbone, "layer3"):
+            for p in model.backbone.layer3.parameters():
                 p.requires_grad = True
 
     return model
 
 
 # ==========================
-# METRICHE
+# EVAL + METRICHE
 # ==========================
 @torch.no_grad()
 def evaluate(model, loader, criterion, device, n_classes):
@@ -261,10 +263,61 @@ def evaluate(model, loader, criterion, device, n_classes):
 
 
 # ==========================
-# TRAIN (AMP)
+# CONFUSION MATRIX (solo terminale)
+# ==========================
+@torch.no_grad()
+def compute_confusion_matrix(model, loader, device, n_classes):
+    model.eval()
+    cm = np.zeros((n_classes, n_classes), dtype=np.int64)  # [true, pred]
+
+    for inputs, labels in tqdm(loader, desc="ConfMat", leave=False):
+        inputs = inputs.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        outputs = model(inputs)
+        preds = outputs.argmax(1)
+
+        for t, p in zip(labels.view(-1), preds.view(-1)):
+            cm[int(t), int(p)] += 1
+
+    return cm
+
+
+def print_confusion_matrix(cm, class_names):
+    # stampa grezza
+    print("\n===== CONFUSION MATRIX (righe=true, colonne=pred) =====")
+    header = " " * 18 + " ".join([f"{name[:10]:>10}" for name in class_names])
+    print(header)
+    for i, name in enumerate(class_names):
+        row = " ".join([f"{cm[i, j]:10d}" for j in range(len(class_names))])
+        print(f"{name[:16]:>16} {row}")
+
+    # normalizzata per riga (recall per classe)
+    print("\n===== CONFUSION MATRIX NORMALIZZATA per riga (recall) =====")
+    cm_norm = cm / np.clip(cm.sum(axis=1, keepdims=True), 1, None)
+    np.set_printoptions(precision=3, suppress=True)
+
+    header = " " * 18 + " ".join([f"{name[:10]:>10}" for name in class_names])
+    print(header)
+    for i, name in enumerate(class_names):
+        row = " ".join([f"{cm_norm[i, j]:10.3f}" for j in range(len(class_names))])
+        print(f"{name[:16]:>16} {row}")
+
+
+# ==========================
+# TRAIN (AMP + BN freeze + grad clip)
 # ==========================
 def train_one_epoch(model, loader, criterion, optimizer, device, scaler, use_amp: bool):
     model.train()
+
+    # Blocca running stats delle BatchNorm nel backbone congelato:
+    if hasattr(model, "backbone") and FREEZE_ALL_BUT_LAYER4:
+        model.backbone.eval()
+        if hasattr(model.backbone, "layer4"):
+            model.backbone.layer4.train()
+        if UNFREEZE_LAYER3 and hasattr(model.backbone, "layer3"):
+            model.backbone.layer3.train()
+
     running_loss = 0.0
     correct = 0
     total = 0
@@ -279,13 +332,17 @@ def train_one_epoch(model, loader, criterion, optimizer, device, scaler, use_amp
             with AUTOCAST_CTX(enabled=True):
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
+
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
             scaler.step(optimizer)
             scaler.update()
         else:
             outputs = model(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
             optimizer.step()
 
         running_loss += loss.item() * inputs.size(0)
@@ -307,7 +364,6 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
 
-    # Dataset base SENZA transform (PIL -> transform la applico nei subset)
     base_dataset = datasets.ImageFolder(root=DATA_DIR, transform=None)
     class_names = base_dataset.classes
     num_classes = len(class_names)
@@ -315,7 +371,6 @@ def main():
 
     print("Classi trovate:", class_names, "| num_classes:", num_classes)
 
-    # Split stratificato
     train_idx, val_idx, test_idx = stratified_split_indices(
         targets, val_split=VAL_SPLIT, test_split=TEST_SPLIT, seed=SEED
     )
@@ -324,23 +379,20 @@ def main():
     val_dataset   = SubsetWithTransform(base_dataset, val_idx, transform=val_test_transform)
     test_dataset  = SubsetWithTransform(base_dataset, test_idx, transform=val_test_transform)
 
-    # Conteggi classi sul train
     train_targets = np.array([targets[i] for i in train_idx], dtype=np.int64)
     class_counts = np.bincount(train_targets, minlength=num_classes).astype(np.float32)
     print("Campioni TRAIN per classe:", class_counts)
 
-    # Class weights per loss (inverso frequenza, "soft")
+    # Pesi SOLO per il sampler (non per la loss)
     class_weights = class_counts.sum() / (num_classes * np.clip(class_counts, 1.0, None))
-    print("Class weights (train):", class_weights)
+    print("Sampler class weights (train):", class_weights)
 
     model = get_model(num_classes).to(device)
 
-    # Loss pesata
-    criterion = nn.CrossEntropyLoss(
-        weight=torch.tensor(class_weights, dtype=torch.float32, device=device)
-    )
+    # Loss non pesata + label smoothing
+    criterion = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
 
-    # Sampler per bilanciare i batch (stabilizza molto la loss)
+    # Sampler bilanciato
     sample_weights = class_weights[train_targets]
     sampler = WeightedRandomSampler(
         weights=torch.tensor(sample_weights, dtype=torch.double),
@@ -348,7 +400,6 @@ def main():
         replacement=True
     )
 
-    # DataLoader ottimizzati
     common_loader_kwargs = dict(
         num_workers=NUM_WORKERS,
         pin_memory=(device.type == "cuda"),
@@ -356,7 +407,6 @@ def main():
         prefetch_factor=2 if NUM_WORKERS > 0 else None
     )
 
-    # prefetch_factor va passato solo se num_workers>0
     def dl_kwargs():
         return {k: v for k, v in common_loader_kwargs.items() if v is not None}
 
@@ -364,7 +414,7 @@ def main():
         train_dataset,
         batch_size=BATCH_SIZE,
         sampler=sampler,
-        shuffle=False,   # con sampler non usare shuffle
+        shuffle=False,
         **dl_kwargs()
     )
     val_loader = DataLoader(
@@ -380,13 +430,18 @@ def main():
         **dl_kwargs()
     )
 
-    # Optimizer: LR differenziati (head vs layer4)
+    # Optimizer: LR differenziati
     param_groups = [{"params": model.fc.parameters(), "lr": LR_HEAD}]
 
     if hasattr(model.backbone, "layer4"):
         layer4_params = [p for p in model.backbone.layer4.parameters() if p.requires_grad]
         if layer4_params:
             param_groups.append({"params": layer4_params, "lr": LR_LAYER4})
+
+    if UNFREEZE_LAYER3 and hasattr(model.backbone, "layer3"):
+        layer3_params = [p for p in model.backbone.layer3.parameters() if p.requires_grad]
+        if layer3_params:
+            param_groups.append({"params": layer3_params, "lr": LR_LAYER3})
 
     optimizer = optim.AdamW(param_groups, weight_decay=WEIGHT_DECAY)
 
@@ -446,6 +501,10 @@ def main():
     for i, name in enumerate(class_names):
         if per_c_tot[i] > 0:
             print(f"{name}: {per_c_corr[i]/per_c_tot[i]:.4f} ({per_c_corr[i]}/{per_c_tot[i]})")
+
+    # Confusion matrix SOLO terminale
+    cm = compute_confusion_matrix(model, test_loader, device, num_classes)
+    print_confusion_matrix(cm, class_names)
 
 
 if __name__ == "__main__":
