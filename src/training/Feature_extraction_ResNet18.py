@@ -24,6 +24,9 @@ if __name__ == '__main__':
         transforms.Normalize(mean = [0.485, 0.456, 0.406], 
                             std = [0.229, 0.224, 0.225])
     ])
+    
+    if not dataSetPath:
+        raise SystemExit("DATA_PATH non impostata. Mettila nel .env (DATA_PATH=...)")
 
     dataset = ImageFolder(root = dataSetPath, transform = transformer)
     batchSize = 32

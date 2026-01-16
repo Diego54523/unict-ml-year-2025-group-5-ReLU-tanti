@@ -11,7 +11,6 @@ class MLP_Softmax_Classifier(nn.Module):
 
         
     def forward(self,x):
-        hidden_representation = self.hidden_layer(x)
-        hidden_representation = self.activation(hidden_representation)
+        hidden_representation = self.activation(self.hidden_layer(x))
         scores = self.output_layer(hidden_representation)
         return self.softmax(scores)

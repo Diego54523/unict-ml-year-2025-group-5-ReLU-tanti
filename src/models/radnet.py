@@ -67,9 +67,8 @@ seed_everything(SEED)
 # AMP (API nuova con fallback)
 # ==========================
 def make_amp():
+    from torch.amp import GradScaler, autocast
     try:
-        from torch.amp import GradScaler, autocast
-
         def autocast_ctx(enabled: bool):
             return autocast(device_type = "cuda", dtype = torch.float16, enabled = enabled)
 
@@ -79,8 +78,6 @@ def make_amp():
         return scaler_ctor, autocast_ctx
 
     except Exception:
-        from torch.cuda.amp import GradScaler, autocast
-
         def autocast_ctx(enabled: bool):
             return autocast(enabled = enabled)
 
