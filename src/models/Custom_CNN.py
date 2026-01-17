@@ -6,16 +6,16 @@ class CustomCNNFeatureExtractor(nn.Module):
         super(CustomCNNFeatureExtractor, self).__init__()
         self.in_channels = 32
 
-        self.conv1 = nn.Conv2d(1, 32, kernel_size = 7, stride = 2, padding = 3, bias = False)
+        self.conv1 = nn.Conv2d(1, 32, kernel_size = 7, stride = 2, padding = 3, bias = False) # Input 1x176x208 -> Output 32x88x104
         self.bn1 = nn.BatchNorm2d(32)
         self.relu = nn.ReLU(inplace = True)
-        self.maxpool = nn.MaxPool2d(kernel_size = 3, stride = 2, padding = 1) # Dopo maxpool saremo circa a 1/4 della dimensione originale (es. 45x52)
+        self.maxpool = nn.MaxPool2d(kernel_size = 3, stride = 2, padding = 1) # Output 32x44x52
 
-        self.layer1 = self.layer_block(BasicBlock, 32, num_blocks = 2, stride = 1)  # Dimensione 32x176x206
-        self.layer2 = self.layer_block(BasicBlock, 64, num_blocks = 2, stride = 2) # Dimensione 64x88x103
-        self.layer3 = self.layer_block(BasicBlock, 128, num_blocks = 2, stride = 2) # Dimensione 128x44x52
+        self.layer1 = self.layer_block(BasicBlock, 32, num_blocks = 2, stride = 1) # Output 32x44x52
+        self.layer2 = self.layer_block(BasicBlock, 64, num_blocks = 2, stride = 2) # Output 64x22x26
+        self.layer3 = self.layer_block(BasicBlock, 128, num_blocks = 2, stride = 2) # Output 128x11x13
 
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1)) # Output sarà di dimensione 256x1x1
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1)) # Output 128x1x1
 
         self.dropout = nn.Dropout(p = 0.25)
         self.linear = nn.Linear(128, num_classes) # Classificazione in 4 classi
