@@ -31,3 +31,7 @@ weights/custom_cnn_classifier_weights_epoch_8.pth
 weights/custom_cnn_classifier_weights_epoch_9.pth
 weights/custom_cnn_classifier_weights_epoch_10.pth
 Custom_CNN_for_Feature_Extraction.py
+
+features/
+
+weight_Softmax_MLP/
