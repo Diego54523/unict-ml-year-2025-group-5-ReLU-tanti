@@ -4,7 +4,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.optim import Adam
 import torch
 from sklearn.metrics import accuracy_score
-from src.data.Average_for_Batch_Value import AverageValueMeter
+from data.Average_for_Batch_Value import AverageValueMeter
 import os
 import sys
 from tqdm import tqdm 
@@ -17,7 +17,7 @@ def train_classifier(model, train_loader, test_loader, class_weights, exp_name =
     optimizer = Adam(model.parameters(), lr = lr, weight_decay = 1e-4)
 
     # Setup Scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode = 'max', factor = 0.5, patience = patience, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode = 'max', factor = 0.5, patience = patience)
    
     # Meters
     loss_meter = AverageValueMeter()

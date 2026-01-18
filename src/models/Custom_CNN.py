@@ -1,5 +1,5 @@
 from torch import nn
-from src.models.Custom_BasicBlock_CNN import BasicBlock
+from models.Custom_BasicBlock_CNN import BasicBlock
 
 class CustomCNNFeatureExtractor(nn.Module):
     def __init__(self, num_classes = 4):

@@ -4,7 +4,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.optim import SGD
 import torch
 from sklearn.metrics import accuracy_score
-from src.data.Average_for_Batch_Value import AverageValueMeter
+from data.Average_for_Batch_Value import AverageValueMeter
 import os
 
 def train_classifier(model, train_loader, test_loader, class_weights, exp_name = "experiment_mlp_classifier", lr=0.001, epochs = 10, momentum = 0.9, logdir="logs_mlp_classifier"):

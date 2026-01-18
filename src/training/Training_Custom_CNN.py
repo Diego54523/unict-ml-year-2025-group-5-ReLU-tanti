@@ -4,9 +4,9 @@ import numpy as np
 from torchvision import transforms
 from torch.utils.data import DataLoader, random_split, Dataset
 from dotenv import load_dotenv
-from src.data.Get_Mean_std import get_mean_std
-from src.models.Custom_CNN import CustomCNNFeatureExtractor
-from src.training.Func_train_CNN import train_classifier
+from data.Get_Mean_std import get_mean_std
+from models.Custom_CNN import CustomCNNFeatureExtractor
+from training.Func_train_CNN import train_classifier
 from torchvision.datasets import ImageFolder
 import gc #Importo questa libreria per la gestione della memoria, dato che anche con una BATCH di 32 arivati al layer3 la memoria GPU si esaurisce, con questa classe per sicurezza pulisco innanzitutto la memoria prima di addestrare il modello
 from sklearn.metrics import classification_report
@@ -44,7 +44,7 @@ def calculate_class_weights(dataset, subset_indices, device):
     return torch.FloatTensor(weights).to(device)
 
 
-if __name__ == '__main__':
+def main():
     load_dotenv()
     
     # Configurazione Parametri
@@ -169,3 +169,7 @@ if __name__ == '__main__':
     # Opzionale: Matrice di Confusione
     print("\nClassification Report:")
     print(classification_report(all_labels, all_preds, target_names = ["Mild", "Moderate", "Non", "Very Mild"]))
+    
+    
+if __name__ == "__main__":
+    main()

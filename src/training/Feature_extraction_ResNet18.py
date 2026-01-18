@@ -10,7 +10,7 @@ import os
 from dotenv import load_dotenv
 
 # Su Windows non posso usare più threads per caricare il dataset quindi devo definire manualmente il processo padre per chiamare i threads.
-if __name__ == '__main__':
+def main():
     load_dotenv()
 
     dataSetPath = os.getenv("DATA_PATH")
@@ -110,3 +110,6 @@ if __name__ == '__main__':
         val_labels = te_labels,
         classes = np.array(classes)
     )
+    
+if __name__ == "__main__":
+    main()

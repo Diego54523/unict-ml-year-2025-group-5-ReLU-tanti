@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 from tqdm import tqdm
 from dotenv import load_dotenv
-from src.models.Custom_CNN import CustomCNNFeatureExtractor
+from models.Custom_CNN import CustomCNNFeatureExtractor
 
 def extract_features_to_numpy(model, loader, device):
     model.eval() # Fondamentale: disattiviamo Dropout e BatchNorm
@@ -32,7 +32,7 @@ def extract_features_to_numpy(model, loader, device):
     labels = np.concatenate(labels_list, axis = 0)
     return features, labels
 
-if __name__ == "__main__":
+def main():
     load_dotenv()
     
     dataSetPath = os.getenv("DATA_PATH")
@@ -113,3 +113,7 @@ if __name__ == "__main__":
              classes = classes)
     
     print(f"\nFeatures salvate in: {save_path}")
+    
+    
+if __name__ == "__main__":
+    main()
