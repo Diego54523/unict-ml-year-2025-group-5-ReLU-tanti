@@ -6,76 +6,98 @@ from training.Func_Softmax_MLP_train_classifier import train_classifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.utils.class_weight import compute_class_weight
-import os
+from pathlib import Path
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # ==========================
+    # PROJECT PATHS
+    # ==========================
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]  # ML-Project/
+    FEATURES_DIR = PROJECT_ROOT / "results" / "features"
+    LOGS_DIR = PROJECT_ROOT / "results" / "logs"
+    FEATURES_DIR.mkdir(parents=True, exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Carichiamo le feature estratte e salvate in precedenza
-    data = np.load(os.path.join(script_dir, "mri_features_custom.npz"))
-    X_train = data['train_feats']
-    y_train = data['train_labels']
-    X_val = data['val_feats']
-    y_val = data['val_labels']
+    features_path = FEATURES_DIR / "mri_features_custom.npz"
+    if not features_path.exists():
+        raise SystemExit(
+            f"File feature non trovato: {features_path}\n"
+            "Esegui prima l'estrazione delle features (Extract_Features_Custom_CNN.py)."
+        )
 
-    classes = data['classes'].tolist()
+    # ==========================
+    # LOAD FEATURES
+    # ==========================
+    data = np.load(features_path, allow_pickle=True)
+    X_train = data["train_feats"]
+    y_train = data["train_labels"]
+    X_val = data["val_feats"]
+    y_val = data["val_labels"]
+    classes = data["classes"].tolist()
 
-    # MLP classifier
-
-    # Convertiamo i numpy array (le feature estratte da ResNet) in tensori PyTorch
+    # ==========================
+    # DATALOADERS
+    # ==========================
     feat_train_data = TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train))
     feat_val_data = TensorDataset(torch.from_numpy(X_val), torch.from_numpy(y_val))
 
-    # Creiamo dei nuovi DataLoader per features (vettori lunghi 512) invece di immagini
-    feat_train_loader = DataLoader(feat_train_data, batch_size = 32, shuffle = True)
-    feat_val_loader = DataLoader(feat_val_data, batch_size = 32, shuffle = False)
+    feat_train_loader = DataLoader(feat_train_data, batch_size=32, shuffle=True)
+    feat_val_loader = DataLoader(feat_val_data, batch_size=32, shuffle=False)
 
-    # CONFIGURIAMO L'MLP PER LE FEATURE (INPUT_SIZE = 512 e HIDDEN_UNITS = 256 per ResNet18, ora rispettivamente 128 e 64 per Custom CNN)
-    INPUT_SIZE = 128
-    HIDDEN_UNITS = 64
-    NUM_CLASSES = 4
+    # ==========================
+    # MODEL CONFIG
+    # ==========================
+    INPUT_SIZE = X_train.shape[1]
+    NUM_CLASSES = len(classes)
+    HIDDEN_UNITS = 64  
 
-    # Calcoliamo dei pesi che verranno usati per  alla frequenza (più è rara la classe, più alto il peso)
-    # y_train contiene le etichette numeriche (0, 1, 2, 3)
-    class_weights = compute_class_weight(
-        class_weight = 'balanced', 
-        classes = np.unique(y_train), 
-        y = y_train
+    # Class weights (bilanciamento classi)
+    class_weights_np = compute_class_weight(
+        class_weight="balanced",
+        classes=np.unique(y_train),
+        y=y_train,
     )
+    class_weights = torch.tensor(class_weights_np, dtype=torch.float).to(device)
         
-    # Convertiamo in tensore PyTorch e spostiamo su GPU/CPU
-    class_weights = torch.tensor(class_weights, dtype = torch.float).to(device)
-        
-    # Esempio output atteso: [1.0, 10.5, 1.2, 1.1] -> La classe con pochi samples ha peso altissimo
+    # ==========================
+    # TRAIN
+    # ==========================
+    mri_mlp_classifier = MLP_Softmax_Classifier(
+        in_features=INPUT_SIZE,
+        hidden_units=HIDDEN_UNITS,
+        out_classes=NUM_CLASSES,
+    ).to(device)
 
-    # ADDESTRAMENTO
-    mri_mlp_classifier = MLP_Softmax_Classifier(in_features = INPUT_SIZE, hidden_units = HIDDEN_UNITS, out_classes = NUM_CLASSES)
+    mri_mlp_classifier = train_classifier(
+        mri_mlp_classifier,
+        train_loader=feat_train_loader,
+        test_loader=feat_val_loader,
+        class_weights=class_weights,
+        exp_name="mri_mlp_classifier",
+        logdir=str(LOGS_DIR),  # il trainer farà join(logdir, exp_name)
+    )
 
-    mri_mlp_classifier = train_classifier(mri_mlp_classifier, train_loader = feat_train_loader, test_loader = feat_val_loader, class_weights = class_weights, exp_name = "mri_mlp_classifier", logdir = "logs_mri_mlp_classifier")
-
-    # VALUTAZIONE FINALE
+    # ==========================
+    # FINAL EVAL
+    # ==========================
     mri_mlp_classifier.eval()
     all_preds = []
     all_labels = []
 
     with torch.no_grad():
-        # Usiamo feat_val_loader perché contiene già i vettori pronti [Batch, 512]
-        for batch in tqdm(feat_val_loader, desc = "Valutazione"):
-            features, labels = batch
+        for features, labels in tqdm(feat_val_loader, desc="Valutazione"):
             features = features.to(device)
-                
-            # Non serve .view(), le feature sono già piatte (512)
             outputs = mri_mlp_classifier(features)
-            _, max_index = torch.max(outputs, 1)
+            pred = outputs.argmax(dim=1)
 
-            all_preds.extend(max_index.cpu().numpy())
-            all_labels.extend(labels.numpy())
+            all_preds.extend(pred.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
 
     val_accuracy = accuracy_score(all_labels, all_preds)
     print(f"\nAccuracy Finale: {val_accuracy * 100:.2f}%")
-    print(classification_report(all_labels, all_preds, target_names = classes))
+    print(classification_report(all_labels, all_preds, target_names=classes))
     print(confusion_matrix(all_labels, all_preds))
 
 

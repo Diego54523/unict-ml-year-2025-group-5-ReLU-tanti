@@ -7,71 +7,10 @@ import numpy as np
 from torchvision import models
 from tqdm import tqdm
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Su Windows non posso usare più threads per caricare il dataset quindi devo definire manualmente il processo padre per chiamare i threads.
-def main():
-    load_dotenv()
-
-    dataSetPath = os.getenv("DATA_PATH")
-
-    # Preprocess
-    transformer = transforms.Compose([
-        transforms.Grayscale(num_output_channels = 3),
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(mean = [0.485, 0.456, 0.406], 
-                            std = [0.229, 0.224, 0.225])
-    ])
-    
-    if not dataSetPath:
-        raise SystemExit("DATA_PATH non impostata. Mettila nel .env (DATA_PATH=...)")
-
-    dataset = ImageFolder(root = dataSetPath, transform = transformer)
-    batchSize = 32
-    shuffle = True
-    numWorkers = 4
-    divider = 0.8
-
-    trainSize = int(divider * len(dataset))
-    valSize = len(dataset) - trainSize
-
-    trainDataset, valDataset = random_split(
-        dataset, 
-        [trainSize, valSize],
-        generator = torch.Generator().manual_seed(42)
-    )
-
-    trainLoader = DataLoader(
-        trainDataset, 
-        batch_size = batchSize, 
-        shuffle = shuffle, 
-        num_workers = numWorkers
-    )
-
-    valLoader = DataLoader(
-        valDataset, 
-        batch_size = batchSize, 
-        shuffle = shuffle, 
-        num_workers = numWorkers
-    )
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = models.resnet18(weights = models.ResNet18_Weights.DEFAULT)
-
-    featureExtractor = torch.nn.Sequential(
-        *list(model.children())[:-1]).to(device).eval()
-
-
-    batch = next(iter(trainLoader))
-    imgs, labels = batch 
-
-    with torch.no_grad():
-        feats = featureExtractor(imgs.to(device))
-        feats = feats.view(feats.size(0), -1)
-
-    def extract_embeddings(dataloader, feature_extractor, device):
+def extract_embeddings(dataloader, feature_extractor, device):
         all_feats = []
         all_labels = []
 
@@ -91,25 +30,100 @@ def main():
 
         return all_feats.numpy(), all_labels.numpy()
 
-    train_feats, train_labels = extract_embeddings(
-        trainLoader, featureExtractor, device)
+def main():
+    load_dotenv()
+    dataSetPath = os.getenv("DATA_PATH")
+    
+    if not dataSetPath:
+        raise SystemExit("DATA_PATH non impostata. Mettila nel .env (DATA_PATH=...)")
+    
+    # ==========================
+    # PROJECT PATHS
+    # ==========================
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]  # ML-Project/
+    FEATURES_DIR = PROJECT_ROOT / "results" / "features"
+    FEATURES_DIR.mkdir(parents=True, exist_ok=True)
 
-    te_feats, te_labels = extract_embeddings(
-        valLoader, featureExtractor, device)
+    output_path = FEATURES_DIR / "mri_features.npz"
+    
+    # ==========================
+    # CONFIG
+    # ==========================
+    batchSize = 32
+    numWorkers = 0 if os.name == "nt" else 4
+    divider = 0.8
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # ==========================
+    # PREPROCESS
+    # ==========================
+    transformer = transforms.Compose([
+        transforms.Grayscale(num_output_channels=3),
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        )
+    ])
+    
+
+    dataset = ImageFolder(root=dataSetPath, transform=transformer)
     classes = dataset.classes
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    trainSize = int(divider * len(dataset))
+    valSize = len(dataset) - trainSize
 
-    output_path = os.path.join(script_dir, "mri_features.npz")
-
-    np.savez_compressed(output_path,
-        train_feats = train_feats,
-        train_labels = train_labels,
-        val_feats = te_feats,
-        val_labels = te_labels,
-        classes = np.array(classes)
+    trainDataset, valDataset = random_split(
+        dataset,
+        [trainSize, valSize],
+        generator=torch.Generator().manual_seed(42),
     )
+
+    trainLoader = DataLoader(
+        trainDataset,
+        batch_size=batchSize,
+        shuffle=True,
+        num_workers=numWorkers,
+    )
+
+    valLoader = DataLoader(
+        valDataset,
+        batch_size=batchSize,
+        shuffle=False,
+        num_workers=numWorkers,
+    )
+    
+    # ==========================
+    # MODEL (FEATURE EXTRACTOR)
+    # ==========================
+    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+
+    featureExtractor = torch.nn.Sequential(
+        *list(model.children())[:-1]
+    ).to(device).eval()
+
+    # ==========================
+    # EXTRACTION
+    # ==========================
+    train_feats, train_labels = extract_embeddings(trainLoader, featureExtractor, device)
+    val_feats, val_labels = extract_embeddings(valLoader, featureExtractor, device)
+
+    # ==========================
+    # SAVE
+    # ==========================
+    np.savez_compressed(
+        output_path,
+        train_feats=train_feats,
+        train_labels=train_labels,
+        val_feats=val_feats,
+        val_labels=val_labels,
+        classes=np.array(classes),
+    )
+
+    print(f"\nFeatures salvate correttamente in:\n{output_path}")
     
 if __name__ == "__main__":
     main()

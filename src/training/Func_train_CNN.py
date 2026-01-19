@@ -1,45 +1,77 @@
 from os.path import join
-from torch import nn
+from pathlib import Path
+
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim import Adam
 import torch
-from sklearn.metrics import accuracy_score
+from torch import nn
+from tqdm import tqdm
+
 from data.Average_for_Batch_Value import AverageValueMeter
-import os
-import sys
-from tqdm import tqdm 
 
-def train_classifier(model, train_loader, test_loader, class_weights, exp_name = "experiment_mlp_classifier", lr=0.001, epochs=20, momentum=0.9, logdir="logs_mlp_classifier", patience=4):
-    
-    criterion = nn.CrossEntropyLoss(label_smoothing = 0.1)
 
-    # Setup Optimizer (Adam per convergenza veloce)
-    optimizer = Adam(model.parameters(), lr = lr, weight_decay = 1e-4)
+def train_classifier(
+    model,
+    train_loader,
+    test_loader,
+    class_weights,
+    exp_name="experiment_cnn_classifier",
+    lr=0.001,
+    epochs=20,
+    logdir=None,    # se None -> results/logs
+    patience=4
+):
+    # ==========================
+    # PROJECT PATHS (results/)
+    # ==========================
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]  # ML-Project/
+    RESULTS_DIR = PROJECT_ROOT / "results"
+    WEIGHTS_DIR = RESULTS_DIR / "weights"
+    LOGS_BASE_DIR = RESULTS_DIR / "logs"
 
-    # Setup Scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode = 'max', factor = 0.5, patience = patience)
-   
-    # Meters
+    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    LOGS_BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if logdir is None:
+        logdir = str(LOGS_BASE_DIR)
+
+    # TensorBoard logs in results/logs/<exp_name>/
+    writer = SummaryWriter(join(logdir, exp_name))
+
+    # ==========================
+    # LOSS / OPTIM / SCHED
+    # ==========================
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+
+    optimizer = Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=patience
+    )
+
+    # ==========================
+    # METERS
+    # ==========================
     loss_meter = AverageValueMeter()
     acc_meter = AverageValueMeter()
 
-    # Tensorboard & Paths
-    writer = SummaryWriter(join(logdir, exp_name))
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    weights_dir = os.path.join(script_dir, "weights_Custom_CNN")
-    os.makedirs(weights_dir, exist_ok = True)
-    
+    # ==========================
+    # DEVICE
+    # ==========================
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
 
     loader = {"train": train_loader, "test": test_loader}
-    
+
     global_step = 0
     best_acc = 0.0
     patience_counter = 0
-    best_model_path = os.path.join(weights_dir, f"{exp_name}_BEST.pth")
+
+    best_model_path = WEIGHTS_DIR / f"{exp_name}_BEST.pth"
+    last_model_path = WEIGHTS_DIR / f"{exp_name}_LAST.pth"
 
     print(f"Inizio training su device: {device}")
+    print(f"Log dir: {join(logdir, exp_name)}")
+    print(f"Weights dir: {WEIGHTS_DIR}")
 
     for e in range(epochs):
         print(f"\n--- Epoch {e+1}/{epochs} ---")
@@ -49,16 +81,12 @@ def train_classifier(model, train_loader, test_loader, class_weights, exp_name =
             acc_meter.reset()
             model.train() if mode == "train" else model.eval()
 
-            # Inizializziamo la barra TQDM
-            # desc: Testo a sinistra della barra
-            # unit: unità di misura (batch)
-            # leave=True: lascia la barra stampata alla fine
-            pbar = tqdm(loader[mode], desc = f"{mode.capitalize()}", unit = "batch", leave = True)
-            
+            pbar = tqdm(loader[mode], desc=f"{mode.capitalize()}", unit="batch", leave=True)
+
             with torch.set_grad_enabled(mode == "train"):
-                for batch in pbar:
-                    x = batch[0].to(device)
-                    y = batch[1].to(device)
+                for x, y in pbar:
+                    x = x.to(device)
+                    y = y.to(device)
 
                     output = model(x)
                     l = criterion(output, y)
@@ -67,38 +95,34 @@ def train_classifier(model, train_loader, test_loader, class_weights, exp_name =
                         l.backward()
                         optimizer.step()
                         optimizer.zero_grad()
-                        
                         global_step += x.shape[0]
 
-                    # Calcolo metriche
-                    acc = accuracy_score(y.cpu(), output.cpu().max(1)[1])
+                    pred = output.argmax(dim=1)
+                    acc = (pred == y).float().mean().item()
+
                     loss_meter.add(l.item(), x.shape[0])
                     acc_meter.add(acc, x.shape[0])
 
-                    # Logging Tensorboard (solo train step)
                     if mode == "train":
-                        writer.add_scalar("loss/train_step", l.item(), global_step = global_step)
-                        writer.add_scalar("accuracy/train_step", acc, global_step = global_step)
+                        writer.add_scalar("loss/train_step", l.item(), global_step=global_step)
+                        writer.add_scalar("accuracy/train_step", acc, global_step=global_step)
 
-                    # Aggiorniamo la barra con le metriche correnti (media accumulata)
                     pbar.set_postfix({
-                        "Loss": f"{loss_meter.value():.4f}", 
+                        "Loss": f"{loss_meter.value():.4f}",
                         "Acc": f"{acc_meter.value():.4f}"
                     })
-            
-            # Fine del loop per questa mode
-            # Scriviamo su Tensorboard i valori medi dell'epoca
-            writer.add_scalar(f"loss/{mode}", loss_meter.value(), global_step = global_step)
-            writer.add_scalar(f"accuracy/{mode}", acc_meter.value(), global_step = global_step)
 
-            # Logica di salvataggio e Early Stopping (solo su test)
+            writer.add_scalar(f"loss/{mode}", loss_meter.value(), global_step=global_step)
+            writer.add_scalar(f"accuracy/{mode}", acc_meter.value(), global_step=global_step)
+
             if mode == "test":
                 val_accuracy = acc_meter.value()
                 scheduler.step(val_accuracy)
 
                 if val_accuracy > best_acc:
-                    # Usiamo tqdm.write per non rompere la barra grafica
-                    tqdm.write(f" -> MIGLIORAMENTO! Acc: {best_acc:.4f} -> {val_accuracy:.4f}. Salvataggio...")
+                    tqdm.write(
+                        f" -> MIGLIORAMENTO! Acc: {best_acc:.4f} -> {val_accuracy:.4f}. Salvataggio BEST..."
+                    )
                     best_acc = val_accuracy
                     patience_counter = 0
                     torch.save(model.state_dict(), best_model_path)
@@ -106,14 +130,15 @@ def train_classifier(model, train_loader, test_loader, class_weights, exp_name =
                     patience_counter += 1
                     tqdm.write(f" -> Nessun miglioramento. Patience: {patience_counter} / {patience}")
 
-        # Controllo Early Stopping
+        torch.save(model.state_dict(), last_model_path)
+
         if patience_counter >= patience:
-            print(f"\n--- EARLY STOPPING: Stop training ---")
+            print("\n--- EARLY STOPPING: Stop training ---")
             break
 
-    # Caricamento finale
-    if os.path.exists(best_model_path):
+    if best_model_path.exists():
         print(f"\nFine Training. Ricarico modello migliore (Acc: {best_acc:.4f})")
-        model.load_state_dict(torch.load(best_model_path))
-    
+        model.load_state_dict(torch.load(best_model_path, map_location=device))
+
+    writer.close()
     return model
