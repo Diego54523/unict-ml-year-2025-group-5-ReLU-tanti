@@ -1,7 +1,7 @@
-# radnet.py
 import os
 import random
 from pathlib import Path
+from dotenv import load_dotenv
 
 import numpy as np
 from tqdm import tqdm
@@ -11,152 +11,9 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import datasets, transforms
-from dotenv import load_dotenv
 
 
-# ==========================
-# CONFIG
-# ==========================
-SEED = 42
-
-BATCH_SIZE = 64
-NUM_EPOCHS = 40
-EARLY_STOP_PATIENCE = 7
-
-LR_HEAD = 5e-5
-LR_LAYER4 = 1e-5
-LR_LAYER3 = 5e-6
-
-WEIGHT_DECAY = 1e-4
-
-K_FOLDS = 5                 # >= 5
-INNER_VAL_SPLIT = 0.15      # validation interna (dal train del fold)
-
-NUM_WORKERS = 8
-USE_AMP = True
-
-FREEZE_ALL_BUT_LAYER4 = True
-UNFREEZE_LAYER3 = True
-
-LABEL_SMOOTHING = 0.05
-GRAD_CLIP_NORM = 1.0
-
-
-# ==========================
-# PATH DATASET (robusto)
-# ==========================
-load_dotenv()
-DATA_DIR = os.getenv("DATA_PATH")
-
-if not DATA_DIR:
-    # fallback: cerca in una posizione locale tipica (opzionale)
-    BASE_DIR = Path(__file__).resolve().parent
-    fallback = BASE_DIR / "archive" / "MRI"
-    DATA_DIR = str(fallback)
-
-assert os.path.isdir(DATA_DIR), f"DATA_DIR non trovato: {DATA_DIR}"
-
-
-# ==========================
-# SEED
-# ==========================
-def seed_everything(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
-
-
-seed_everything(SEED)
-
-
-# ==========================
-# AMP (API nuova con fallback)
-# ==========================
-def make_amp():
-    from torch.amp import GradScaler, autocast
-    try:
-        def autocast_ctx(enabled: bool):
-            return autocast(device_type="cuda", dtype=torch.float16, enabled=enabled)
-
-        def scaler_ctor(enabled: bool):
-            return GradScaler("cuda", enabled=enabled)
-
-        return scaler_ctor, autocast_ctx
-
-    except Exception:
-        def autocast_ctx(enabled: bool):
-            return autocast(enabled=enabled)
-
-        def scaler_ctor(enabled: bool):
-            return GradScaler(enabled=enabled)
-
-        return scaler_ctor, autocast_ctx
-
-
-SCALER_CTOR, AUTOCAST_CTX = make_amp()
-
-
-# ==========================
-# TRANSFORMS (MRI-friendly)
-# ==========================
-train_transform = transforms.Compose([
-    transforms.Grayscale(num_output_channels=3),
-    transforms.Resize((256, 256)),
-    transforms.RandomCrop(224),
-    transforms.RandomApply([
-        transforms.RandomAffine(
-            degrees=10,
-            translate=(0.03, 0.03),
-            scale=(0.95, 1.05),
-            shear=5
-        )
-    ], p=0.8),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-])
-
-val_test_transform = transforms.Compose([
-    transforms.Grayscale(num_output_channels=3),
-    transforms.Resize((256, 256)),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-])
-
-
-# ==========================
-# DATASET: subset con transform indipendente
-# ==========================
-class SubsetWithTransform(Dataset):
-    def __init__(self, base_dataset, indices, transform=None):
-        self.base_dataset = base_dataset
-        self.indices = list(indices)
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.indices)
-
-    def __getitem__(self, idx):
-        x, y = self.base_dataset[self.indices[idx]]  # PIL.Image
-        if self.transform is not None:
-            x = self.transform(x)  # Tensor
-        return x, y
-
-
-# ==========================
-# STRATIFIED SPLIT (senza sklearn) su targets "flat"
-# ==========================
-def stratified_split_indices(targets, val_split=0.15, test_split=0.15, seed=42):
-    """
-    Refactor in classe del tuo script RadImageNet-ResNet50 + K-Fold stratificato.
-    NOTA: la logica e i default sono mantenuti identici al codice originale.
-    """
-
+class RadNetRunner:
     # ==========================
     # CONFIG (default identici)
     # ==========================
@@ -186,9 +43,13 @@ def stratified_split_indices(targets, val_split=0.15, test_split=0.15, seed=42):
 
     # ==========================
     # DATASET PATH (robusto)
-    # ==========================
-    BASE_DIR = Path(__file__).resolve().parent / "../../"
-    DATA_DIR = str(BASE_DIR / "archive" / "MRI")
+    # ==========================  
+    load_dotenv()
+    
+    DATA_DIR = os.getenv("DATA_PATH")
+    if not DATA_DIR:
+        raise ValueError("DATA_PATH non definito nel file .env")  
+    
 
     def __init__(
         self,

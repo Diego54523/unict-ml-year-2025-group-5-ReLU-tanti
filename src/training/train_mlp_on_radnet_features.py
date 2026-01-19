@@ -1,5 +1,3 @@
-# src/training/train_mlp_on_radnet_features.py
-
 import sys
 from pathlib import Path
 
@@ -10,19 +8,18 @@ from torch.utils.data import Dataset, DataLoader
 
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
-
-from src.models.MLP_Softmax_Class import MLP_Softmax_Classifier
-from src.data.Average_for_Batch_Value import AverageValueMeter
+from models.MLP_Softmax_Class import MLP_Softmax_Classifier
+from data.Average_for_Batch_Value import AverageValueMeter
 
 
 # ==========================
 # PATHS
 # ==========================
-SCRIPT_DIR = Path(__file__).resolve().parent
-FEATURES_NPZ = (ROOT / "features" / "radnet_features.npz").resolve()
-OUT_WEIGHTS = (SCRIPT_DIR / "weights_Softmax_MLP" / "mlp_on_radnet.pth").resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # ML-Project/
+RESULTS_DIR = PROJECT_ROOT / "results"
+
+FEATURES_NPZ = (RESULTS_DIR / "features" / "radnet_features.npz").resolve()
+OUT_WEIGHTS = (RESULTS_DIR / "weights" / "mlp_on_radnet.pth").resolve()
 
 # ==========================
 # CONFIG

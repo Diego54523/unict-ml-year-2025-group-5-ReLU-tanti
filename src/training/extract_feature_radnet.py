@@ -1,6 +1,6 @@
 import os
 import random
-import sys
+from dotenv import load_dotenv
 from pathlib import Path
 
 import numpy as np
@@ -11,14 +11,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
-
-# ==========================
-# Fix import "src"
-# ==========================
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
-
-from src.models.radnet import RadNetRunner
+from training.radnet import RadNetRunner
 
 
 # ==========================
@@ -59,15 +52,28 @@ L1_LAMBDA = 1e-7              # inizia piccolo; se troppo alto peggiora
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 
-# output features
-OUT_DIR = Path(__file__).resolve().parent / "../../features"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-OUT_NPZ = OUT_DIR / "radnet_features.npz"
-BEST_PATH = OUT_DIR / "best_radnet_for_features.pth"
+# ==========================
+# OUTPUT (results/)
+# ==========================
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # ML-Project/
+RESULTS_DIR = PROJECT_ROOT / "results"
+FEATURES_DIR = RESULTS_DIR / "features"
+WEIGHTS_DIR = RESULTS_DIR / "weights"
 
-# dataset
-BASE_DIR = Path(__file__).resolve().parent / "../../"
-DATA_DIR = str(BASE_DIR / "archive" / "MRI")
+FEATURES_DIR.mkdir(parents=True, exist_ok=True)
+WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+
+OUT_NPZ = FEATURES_DIR / "radnet_features.npz"
+BEST_PATH = WEIGHTS_DIR / "best_radnet_for_features.pth"
+
+# ==========================
+# DATASET PATH (from .env)
+# ==========================
+load_dotenv()
+DATA_DIR = os.getenv("DATA_PATH")
+
+if not DATA_DIR:
+    raise SystemExit("DATA_PATH non impostata. Mettila nel .env (DATA_PATH=...)")
 
 
 # ==========================
