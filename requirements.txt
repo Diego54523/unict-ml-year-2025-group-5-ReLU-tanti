@@ -1,0 +1,17 @@
+# Core
+numpy
+scikit-learn
+tqdm
+python-dotenv
+
+# PyTorch
+torch
+torchvision
+
+# Visualization / Demo
+streamlit
+pillow
+matplotlib
+
+# Logging (training)
+tensorboard
