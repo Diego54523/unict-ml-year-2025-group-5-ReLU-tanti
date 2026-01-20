@@ -1,17 +1,34 @@
-# Core
+# =========================
+# Core scientific stack
+# =========================
 numpy
 scikit-learn
 tqdm
 python-dotenv
 
+# =========================
 # PyTorch
+# =========================
 torch
 torchvision
 
-# Visualization / Demo
-streamlit
+# =========================
+# Imaging
+# =========================
 pillow
 matplotlib
 
-# Logging (training)
+# =========================
+# Training / logging
+# =========================
 tensorboard
+
+# =========================
+# Demo / UI
+# =========================
+streamlit
+
+# =========================
+# RadImageNet (NON da PyPI)
+# =========================
+git+https://github.com/Warvito/radimagenet-models.git

@@ -119,6 +119,9 @@ Per testare rapidamente il progetto:
 3. avviare la demo interattiva (`streamlit run src/demo/demo.py`)
 4. oppure eseguire training ed estrazione feature tramite CLI (`python src/main.py --task <task>`)
 
+### Ulteriori
+Nel caso il modello RadiMagnet (radnet) non dovesse funzionare nonostante l'installazione dei pacchetti opzionali per PyTorch nei [requirements.txt](requirements.txt) vedere il link di drive ufficiale della [rete](https://drive.google.com/uc?export=download&id=1VOWHgOq0rm7OkE_JxlWXhMAH4CvcXUHT).
+
 ---
 
 ## 👥 Gruppo di lavoro
