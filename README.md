@@ -1,57 +1,131 @@
-# 🤖 unict-ml-year-2025-group-5: ReLU-tanti
-Benvenuti nel repository template per i progetti di Machine Learning del laboratorio.
-Questo repository fornisce una struttura base per organizzare codice, dati e documentazione.
+# MRI Classification – Machine Learning Project
 
-📂 Struttura del progetto
-unict-ml-year-x-group-x/
-│
-├── data/       # Dataset e file di dati
-│
-├── docs/       # Documentazione e report
-│
-├── media/      # Video demo, immagini, screenshot
-│
-├── notebooks/  # Jupyter notebooks per analisi ed esperimenti
-│
-├── project_ideas/  # Idee e proposte di progetti
-│
-├── results/    # Risultati, log, metriche, modelli
-│
-├── src/        # Codice sorgente
-│
-└── README.md   # Questo file
-📃 Documentazione
-Per la stesura del report finale, utilizzare il template fornito in docs/report-template.md.
-Il template contiene le sezioni standard richieste per documentare il progetto.
+Progetto di Machine Learning per la **classificazione di immagini MRI**, sviluppato come elaborato universitario.  
+Il progetto include pipeline complete di **training**, **feature extraction**, **classificazione** e una **demo interattiva di inferenza con explainability**.
 
-💡Idee di progetti
-Per una lista di idee di progetti basati su dataset disponibili pubblicamente, consultare il file:
-project_ideas/project_ideas.md.
+---
 
-🛠️ Come usare il repository
-Ogni gruppo deve partire dal template seguendo questi passaggi:
+## 📁 Struttura del progetto
 
-Creare un nuovo repository dal template
+```text
+ML-PROJECT/
+├── notebooks/          # Notebook esplorativi
+├── results/            # Output (pesi, feature, risultati)
+├── src/
+│   ├── data/           # Utility e dataset helper
+│   ├── demo/           # Demo interattiva (Streamlit)
+│   ├── explainability/ # Codice per interpretabilità
+│   ├── models/         # Definizione modelli
+│   ├── training/       # Training ed estrazione feature
+│   └── main.py         # Entry point CLI
+├── requirements.txt    # Dipendenze
+├── README.md
+└── LICENSE
+```
 
-Cliccare su Use this template nella pagina del template
-Creare un nuovo repository privato per il proprio gruppo
-Rinominare il repository usando la convenzione:
-unict-ml-year-x-group-x
-dove:
-year-x indica l'anno del corso
-group-x è il numero del gruppo
+---
+
+## ⚙️ Setup ambiente
+
+### 1. Creare un ambiente virtuale (consigliato)
+
+```bash
+python -m venv venv
+source venv/bin/activate    # Linux / macOS
+venv\Scripts\activate       # Windows
+```
+
+### 2. Installare le dipendenze
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+### 📦 Dataset
+
+Il dataset deve essere organizzato in formato **ImageFolder** (una cartella per classe), ad esempio:
+```text
+MRI/
+├── Mild/
+├── Moderate/
+├── Non/
+└── Very Mild/
+```
+
+Creare un file `.env` nella root del progetto e specificare il percorso del dataset:
+```env
+DATA_PATH=percorso/alla/cartella/MRI
+```
+
+---
+
+### 🚀 Esecuzione pipeline (CLI)
+
+Il progetto espone un **entry point unico**:
+```bash
+python src/main.py --task <task>
+```
+
+#### Task disponibili:
+- `train_cnn` - training Custom CNN
+- `train_radnet` - training RadNet
+- `train_mlp` - training MLP su feature estratte
+- `train_mlp_on_radnet` - training MLP su feature RadNet
+- `extract_resnet` - estrazione feature da ResNet18
+- `extract_custom` - estrazione feature da Custom CNN
+- `extract_radnet` - estrazione feature da RadNet
+
 Esempio:
-unict-ml-year-25-group-01
-Aggiungere il docente come collaboratore
-Clonare il repository sul proprio computer
+```bash
+python src/main.py --task train_cnn
+```
 
-Aggiornare il README
+Tutti gli output (pesi, feature, risultati) vengono salvati nella cartella `results/`.
 
-Progetto
-Gruppo: xx
-Nome del progetto: ...
-Descrizione breve del progetto: ...
-Membri del gruppo
-Studente 1
-Studente 2
-Studente 3
+---
+
+### 🖥️ Avvio demo interattiva
+
+È disponibile una **demo interattiva** che permette di testare il modello in **fase di inferenza** su immagini MRI.
+
+La demo consente di:
+- caricare un'immagine MRI
+- visualizzare l'immagine di input
+- visualizzare la **ground truth** (se disponibile)
+- visualizzare la **predizione del modello**
+- visualizzare la **heatmap di attivazione** (opzionale) per interpretabilità
+
+#### Avvio demo
+
+```bash
+streamlit run src/demo/demo.py
+```
+
+#### Modalità disponibili
+- **Dataset mode**: Selezione di immagini da un dataset ImageFolder, con ground truth reale (derivata dalla cartella).
+- **Single image mode**: Caricamento manuale di una singola immagine (ground truth non disponibile).
+
+La demo utilizza **modelli già addestrati** e **non richiede training**.
+
+---
+
+## 👨‍🏫 Note per il docente
+
+Per testare rapidamente il progetto: 
+1. configurare `DATA_PATH` in `.env`
+2. installare le dipendenze
+3. avviare la demo interattiva (`streamlit run src/demo/demo.py`)
+4. oppure eseguire training ed estrazione feature tramite CLI (`python src/main.py --task <task>`)
+
+---
+
+## 👥 Gruppo di lavoro
+
+Il presente progetto è stato sviluppato come elaborato di gruppo per il corso di Machine Learning.
+
+**Membri del gruppo:**
+- Diego Martinez - [Diego54523](https://github.com/Diego54523)
+- Emanuele Galiano - [emanuelegaliano](https://github.com/emanuelegaliano)
+- Andrea Tirenti - [Dr-Faxzty](https://github.com/Dr-Faxzty)
