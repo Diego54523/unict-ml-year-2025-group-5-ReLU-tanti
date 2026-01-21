@@ -28,14 +28,6 @@ results/logs/
 events.out.tfevents.*
 
 # ==========================
-# Images / generated artifacts
-# ==========================
-images/
-*.png
-*.jpg
-*.jpeg
-
-# ==========================
 # Temporary / test files
 # ==========================
 test.py
