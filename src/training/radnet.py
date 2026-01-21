@@ -258,12 +258,24 @@ class RadNetRunner:
     # MODEL
     # ==========================
     def get_model(self, num_classes: int):
-        backbone = torch.hub.load(
-            "Warvito/radimagenet-models",
-            model="radimagenet_resnet50",
-            verbose=True,
-            trust_repo=True,
-        )
+        project_root = Path(__file__).resolve().parents[2]  # ML-Project/
+        local_repo = project_root / "src" / "third_party" / "radimagenet-models"
+
+        if local_repo.exists():
+            backbone = torch.hub.load(
+                str(local_repo),
+                model="radimagenet_resnet50",
+                source="local",
+                verbose=True,
+                trust_repo=True,
+            )
+        else:
+            backbone = torch.hub.load(
+                "Warvito/radimagenet-models",
+                model="radimagenet_resnet50",
+                verbose=True,
+                trust_repo=True,
+            )
 
         if hasattr(backbone, "fc"):
             backbone.fc = nn.Identity()
@@ -287,6 +299,7 @@ class RadNetRunner:
 
         model = RadResNet50Classifier(backbone, num_classes)
 
+        # freeze logic invariata...
         if self.FREEZE_ALL_BUT_LAYER4:
             for p in model.backbone.parameters():
                 p.requires_grad = False

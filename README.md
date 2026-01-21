@@ -43,6 +43,30 @@ pip install -r requirements.txt
 
 ---
 
+### 🔌 Dipendenza RadNet (esecuzione offline)
+
+Il modello **RadNet** utilizza backbone pre-addestrati provenienti dal repository  
+[Warvito/radimagenet-models](https://github.com/Warvito/radimagenet-models).
+
+Per garantire **riproducibilità completa** ed evitare dipendenze da connessione internet
+durante l’esecuzione, il repository viene caricato **localmente**.
+
+#### Setup RadNet (obbligatorio solo per RadNet)
+
+Dalla root del progetto:
+
+```bash
+mkdir -p src/third_party
+git clone https://github.com/Warvito/radimagenet-models src/third_party/radimagenet-models
+```
+
+Il codice utilizzerà automaticamente la versione **locale** del repository.
+In assenza della cartella, verrà tentato il download tramite `torch.hub`.
+
+> ℹ️ Nota: la cartella `third_party/` è esclusa dal versionamento Git.
+
+---
+
 ### 📦 Dataset
 
 Il dataset deve essere organizzato in formato **ImageFolder** (una cartella per classe), ad esempio:
